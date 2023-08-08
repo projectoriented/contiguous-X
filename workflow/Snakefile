@@ -5,6 +5,7 @@ import os
 manifest_df = pd.read_csv(config["manifest"], sep='\t', keep_default_na=False).set_index(["sample"], drop=False)
 haps = manifest_df.columns
 chrX_gsize = config.get("chrX_gsize", 154259566) # chm13v2 chrX size
+conf_fraction = config.get("confident_fraction", 0.80)
 
 # Make sure there is just one entry
 assert len(config["reference"].keys()) == 1, "Only one reference_name:reference_path pair allowed, e.g. chrX_T2T: /path/to/fasta"
@@ -19,22 +20,16 @@ wildcard_constraints:
     chr=target_chr,
     fasta_origin="main|support"
 
+# TODO: throw error if support_fofn is NA or the length is less
 
 def get_final_output(wildcards):
-    p=f"results/{ref_name}/{{sample}}/{{fasta_origin}}/{{asm}}.paf"
+    p=f"results/{ref_name}/{{sample}}/{{asm}}_{{conf_prnct}}_no-mapping.bed"
 
     final_output = []
     for row in manifest_df.itertuples():
-        fasta_origin = "support"
-        if not pd.isnull(row.support_fofn):
-            asm_names = get_fa_df(sample_name=row.sample, which_one=fasta_origin).index.tolist()
-            for asm in asm_names:
-                final_output.append(p.format(sample=row.sample, fasta_origin=fasta_origin, asm=asm))
-
-        fasta_origin = "main"
-        asm_names = get_fa_df(sample_name=row.sample,which_one=fasta_origin).index.tolist()
+        asm_names = get_fa_df(sample_name=row.sample, which_one="main").index.tolist()
         for asm in asm_names:
-            final_output.append(p.format(sample=row.sample,fasta_origin=fasta_origin,asm=asm))
+            final_output.append(p.format(sample=row.sample, asm=asm, conf_prnct=conf_fraction))
 
     return final_output
 
@@ -69,11 +64,28 @@ def get_fa_df(sample_name, which_one="main"):
     return fofn_df
 
 def get_confident_beds(wildcards):
+    p = f"results/{ref_name}/{{sample}}/{{fasta_origin}}/{{asm}}_{{conf_prnct}}_confident-mapping.bed"
+
+    beds = []
+
+    # We want the supporting contigs that map to X
+    fasta_origin = "support"
+    for row in manifest_df.itertuples():
+        asm_names = get_fa_df(sample_name=row.sample, which_one=fasta_origin).index.tolist()
+        for asm in asm_names:
+            beds.append(p.format(sample=row.sample, fasta_origin=fasta_origin, asm=asm, conf_prnct=wildcards.conf_prnct))
+
+    # Add the main contigs that map to X
+    fasta_origin = "main"
+    beds.append(
+        p.format(sample=wildcards.sample, fasta_origin=fasta_origin, asm=wildcards.asm, conf_prnct=wildcards.conf_prnct)
+    )
+
+    return beds
 
 
 rule all:
     input:
-        # expand('results/{sample}/{sample}_{hap}.{ext}',sample=manifest_df.index,hap=haps,ext=['fasta', 'fasta.fai'])
         get_final_output
 
 rule make_paf:
@@ -116,16 +128,16 @@ rule extract_confident_contigs:
         df = pd.read_table(input.paf,header=None,usecols=range(0,12))
 
         groupdf = df.groupby([0, 1])[9].sum().reset_index()
-        groupdf["fraction"] = groupdf.apply(lambda row: row[9] / row[1],axis=1)
+        groupdf.loc[:, "fraction"] = groupdf.apply(lambda row: row[9] / row[1],axis=1)
         groupdf = groupdf.query(fr'fraction >= {wildcards.conf_prnct}')
 
         groupdf.drop(columns=[9], inplace=True)
-        df = df.merge(groupdf,how="inner",on=[0, 1]).drop(columns=["fraction"])
+        df = df.merge(groupdf, how="inner",on=[0, 1]).drop(columns=["fraction"])
 
         df.to_csv(output.confident_paf, sep="\t", header=False, index=False)
 
         # contig id: contig-name:start-end
-        df[12] = df[0].astype(str) + df[2].astype(str) + df[3].astype(str)
+        df.loc[:, 12] = df[0].astype(str) + ":" + df[2].astype(str) + "-" + df[3].astype(str)
         df.to_csv(output.confident_bed, columns=[5,7,8,12],sep="\t", header=False, index=False)
 
 rule extract_nomaps:
@@ -133,10 +145,19 @@ rule extract_nomaps:
     input:
         confident_beds = get_confident_beds
     output:
-        no_mappings_bed = "results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_no-mapping.bed"
+        no_mappings_bed = "results/{ref_name}/{sample}/{asm}_{conf_prnct}_no-mapping.bed"
     params:
         chrX_gsize = chrX_gsize
     shell:
         """
-        cat {input.confident_beds} | bedtools sort -i - | bedtools merge -i - | bedtools complement -i - -g <(echo -e "chrX\\t{params.chrX_gsize}")
+        cat {input.confident_beds} | bedtools sort -i - | bedtools merge -i - | bedtools complement -i - -g <(echo -e "chrX\\t{params.chrX_gsize}") > {output.no_mappings_bed}
         """
+
+"""
+Extract the contigs that flank the no-mapping regions
+rule find_flanking_contigs:
+    input:
+        pass
+    output:
+        pass
+"""
