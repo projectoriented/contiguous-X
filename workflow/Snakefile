@@ -4,7 +4,7 @@ import os
 
 manifest_df = pd.read_csv(config["manifest"], sep='\t', keep_default_na=False).set_index(["sample"], drop=False)
 haps = manifest_df.columns
-chrX_gsize = 154259566
+chrX_gsize = config.get("chrX_gsize", 154259566) # chm13v2 chrX size
 
 # Make sure there is just one entry
 assert len(config["reference"].keys()) == 1, "Only one reference_name:reference_path pair allowed, e.g. chrX_T2T: /path/to/fasta"
@@ -67,6 +67,9 @@ def get_fa_df(sample_name, which_one="main"):
 
     fofn_df.set_index("asm", inplace=True)
     return fofn_df
+
+def get_confident_beds(wildcards):
+
 
 rule all:
     input:
