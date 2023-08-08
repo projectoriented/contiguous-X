@@ -1,0 +1,139 @@
+import pandas as pd
+import os
+
+
+manifest_df = pd.read_csv(config["manifest"], sep='\t', keep_default_na=False).set_index(["sample"], drop=False)
+haps = manifest_df.columns
+chrX_gsize = 154259566
+
+# Make sure there is just one entry
+assert len(config["reference"].keys()) == 1, "Only one reference_name:reference_path pair allowed, e.g. chrX_T2T: /path/to/fasta"
+
+ref_name=list(config["reference"].keys()).pop()
+ref_path = config["reference"][ref_name]
+
+target_chr=config.get("target_chr", "chrX")
+wildcard_constraints:
+    sample='|'.join(manifest_df.index),
+    hap='|'.join(manifest_df.columns),
+    chr=target_chr,
+    fasta_origin="main|support"
+
+
+def get_final_output(wildcards):
+    p=f"results/{ref_name}/{{sample}}/{{fasta_origin}}/{{asm}}.paf"
+
+    final_output = []
+    for row in manifest_df.itertuples():
+        fasta_origin = "support"
+        if not pd.isnull(row.support_fofn):
+            asm_names = get_fa_df(sample_name=row.sample, which_one=fasta_origin).index.tolist()
+            for asm in asm_names:
+                final_output.append(p.format(sample=row.sample, fasta_origin=fasta_origin, asm=asm))
+
+        fasta_origin = "main"
+        asm_names = get_fa_df(sample_name=row.sample,which_one=fasta_origin).index.tolist()
+        for asm in asm_names:
+            final_output.append(p.format(sample=row.sample,fasta_origin=fasta_origin,asm=asm))
+
+    return final_output
+
+def get_fasta(wildcards):
+    fa_df = get_fa_df(wildcards.sample, which_one=wildcards.fasta_origin)
+    return fa_df.at[wildcards.asm, "filepath"]
+
+def get_fa_df(sample_name, which_one="main"):
+    if which_one == "main":
+        fofn = "main_fofn"
+    else:
+        fofn = "support_fofn"
+
+    fofn_path = manifest_df.at[sample_name, fofn]
+    fofn_df = pd.read_table(fofn_path, names=["filepath"])
+
+    # Get the cell name minus the extension
+    def get_support_asm_name(fn):
+        bn = os.path.basename(fn).split(".")[:-1]
+        return ".".join(bn)
+
+    fofn_df["asm"] = fofn_df.filepath.map(get_support_asm_name)
+
+    # Check for duplicates
+    if fofn_df.asm.duplicated().any():
+        # Add this column to offset duplicated namings
+        fofn_df["idx"] = range(fofn_df.shape[0])
+
+        fofn_df["asm"] = fofn_df["asm"] + "-" + fofn_df.idx.astype(str)
+
+    fofn_df.set_index("asm", inplace=True)
+    return fofn_df
+
+rule all:
+    input:
+        # expand('results/{sample}/{sample}_{hap}.{ext}',sample=manifest_df.index,hap=haps,ext=['fasta', 'fasta.fai'])
+        get_final_output
+
+rule make_paf:
+    input:
+        fa=get_fasta,
+        ref=ref_path
+    output:
+        paf='results/{ref_name}/{sample}/{fasta_origin}/{asm}.paf'
+    envmodules:
+        "modules",
+        "modules-init",
+        "modules-gs/prod",
+        "modules-eichler/prod",
+        "minimap2/2.24",
+    params:
+        minimap=config.get('minimap_params','-x asm20')
+    threads: 8
+    resources:
+        mem=12,
+        hrs=72
+    shell:
+        '''
+        minimap2 \
+            --eqx -c --cs \
+            {params.minimap} \
+            -t {threads} -K {resources.mem}G \
+            -o {output.paf} \
+            {input.ref} {input.fa}
+        '''
+
+rule extract_confident_contigs:
+    """A confident contig maps 80% of its content to chrX."""
+    input:
+        paf = 'results/{ref_name}/{sample}/{fasta_origin}/{asm}.paf'
+    output:
+        confident_paf = 'results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_confident-mapping.paf',
+        confident_bed = 'results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_confident-mapping.bed'
+    run:
+        # Please reference the columns here: https://github.com/lh3/miniasm/blob/master/PAF.md
+        df = pd.read_table(input.paf,header=None,usecols=range(0,12))
+
+        groupdf = df.groupby([0, 1])[9].sum().reset_index()
+        groupdf["fraction"] = groupdf.apply(lambda row: row[9] / row[1],axis=1)
+        groupdf = groupdf.query(fr'fraction >= {wildcards.conf_prnct}')
+
+        groupdf.drop(columns=[9], inplace=True)
+        df = df.merge(groupdf,how="inner",on=[0, 1]).drop(columns=["fraction"])
+
+        df.to_csv(output.confident_paf, sep="\t", header=False, index=False)
+
+        # contig id: contig-name:start-end
+        df[12] = df[0].astype(str) + df[2].astype(str) + df[3].astype(str)
+        df.to_csv(output.confident_bed, columns=[5,7,8,12],sep="\t", header=False, index=False)
+
+rule extract_nomaps:
+    """Extract regions where there is no contig confidently mapping to chrX"""
+    input:
+        confident_beds = get_confident_beds
+    output:
+        no_mappings_bed = "results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_no-mapping.bed"
+    params:
+        chrX_gsize = chrX_gsize
+    shell:
+        """
+        cat {input.confident_beds} | bedtools sort -i - | bedtools merge -i - | bedtools complement -i - -g <(echo -e "chrX\\t{params.chrX_gsize}")
+        """
