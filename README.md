@@ -1,0 +1,1 @@
+*This is a WIP pipeline.* The aim here is to get a contiguous X assembly for no-reference (i.e. no unrelated middle man) variant calling within a family for the context of disease susceptibility. 
