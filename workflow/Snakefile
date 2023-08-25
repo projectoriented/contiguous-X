@@ -291,8 +291,6 @@ rule contig_fasta:
             {input.original_asm} \
             {input.contig_names} \
             | seqtk seq -Cl60 /dev/stdin > {output.fasta}
-        seqtk subseq \
-            {input.reference_fa} <(echo {params.target_chr})  | seqtk seq -Cl60 /dev/stdin > {output.chrX_ref_fasta}
         """
 
 
