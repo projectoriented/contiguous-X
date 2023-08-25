@@ -214,7 +214,7 @@ rule extract_confident_contigs:
         df[12].to_csv(output.confident_contigs_intervals, header=False, index=False)
 
         # Extract the confident contig names
-        df[0].unique().to_csv(output.confident_contigs, header=False, index=False)
+        df[0].drop_duplicates().to_csv(output.confident_contigs, header=False, index=False)
 
 
 rule extract_nomaps:
