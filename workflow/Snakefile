@@ -241,6 +241,7 @@ rule extract_nomaps:
 rule extract_chrX_ref_fasta:
     input:
         reference_fa=ref_path,
+        reference_fa_fai=ref_path + ".fai",
     output:
         chrX_ref_fasta=temp("results/{ref_name}/chrX.fasta"),
         chrX_ref_fasta_fai=temp("results/{ref_name}/chrX.fasta.fai"),
@@ -261,7 +262,7 @@ rule extract_chrX_ref_fasta:
         seqtk subseq \
             {input.reference_fa} <(echo {params.target_chr})  | seqtk seq -Cl60 /dev/stdin > {output.chrX_ref_fasta}
         
-        grep -w {params.target_chr} {input.reference_fa} > {output.chrX_ref_fasta_fai}
+        grep -w {params.target_chr} {input.reference_fa_fai} > {output.chrX_ref_fasta_fai}
         """
 
 
