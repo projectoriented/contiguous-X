@@ -32,7 +32,7 @@ wildcard_constraints:
 
 def get_final_output(wildcards):
     # p=f"results/{ref_name}/{{sample}}/{{asm}}_{{conf_prnct}}_no-mapping.bed"
-    p = f"results/{ref_name}/{{sample}}/main/ragtag/correction/{{asm}}_confident-mapping_{{conf_prnct}}/"
+    p = f"results/{ref_name}/{{sample}}/ragtag/main/patch/{{asm}}_confident-mapping_{{conf_prnct}}/ragtag.patch.fasta"
 
     final_output = []
     for row in manifest_df.itertuples():
@@ -112,6 +112,19 @@ def get_confident_beds(wildcards):
     return beds
 
 
+def get_ragtag_patch_input(wildcards):
+    asm_name = (
+        get_fa_df(sample_name=wildcards.sample, which_one="support")
+        .index.tolist()
+        .pop()
+    )
+
+    return {
+        "scaffold_main": "results/{ref_name}/{sample}/ragtag/main/scaffold/{asm}_confident-mapping_{conf_prnct}/ragtag.scaffold.fasta",
+        "scaffold_support": f"results/{wildcards.ref_name}/{wildcards.sample}/ragtag/support/scaffold/{asm_name}_confident-mapping_{wildcards.conf_prnct}/ragtag.scaffold.fasta",
+    }
+
+
 rule all:
     input:
         get_final_output,
@@ -122,7 +135,7 @@ rule make_paf:
         fa=get_fasta,
         ref=ref_path,
     output:
-        paf="results/{ref_name}/{sample}/{fasta_origin}/{asm}.paf",
+        paf=temp("results/{ref_name}/{sample}/{fasta_origin}/{asm}.paf"),
     envmodules:
         "modules",
         "modules-init",
@@ -146,16 +159,34 @@ rule make_paf:
         """
 
 
-rule extract_confident_contigs:
-    """A confident contig maps 80% of its content to chrX."""
+rule subset_chrX:
     input:
         paf="results/{ref_name}/{sample}/{fasta_origin}/{asm}.paf",
     output:
+        paf="results/{ref_name}/{sample}/{fasta_origin}/chrX_{asm}.paf",
+    threads: 1
+    resources:
+        mem=12,
+        hrs=72,
+    params:
+        target_chr=target_chr,
+    shell:
+        """
+        cat {input.paf} | grep -w {params.target_chr} > {output.paf}
+        """
+
+
+rule extract_confident_contigs:
+    """A confident contig maps 80% of its content to chrX."""
+    input:
+        paf="results/{ref_name}/{sample}/{fasta_origin}/chrX_{asm}.paf",
+    output:
         confident_paf="results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_confident-mapping.paf",
         confident_bed="results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_confident-mapping.bed",
-        confident_contigs=temp(
+        confident_contigs_intervals=temp(
             "results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_confident-mapping_contig-intervals.txt"
         ),
+        confident_contigs="results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_confident-mapping_contigs.txt",
     run:
         # Please reference the columns here: https://github.com/lh3/miniasm/blob/master/PAF.md
         df = pd.read_table(input.paf, header=None, usecols=range(0, 12))
@@ -180,7 +211,10 @@ rule extract_confident_contigs:
         )
 
         # Extract the contig intervals
-        df[12].to_csv(output.confident_contigs, header=False, index=False)
+        df[12].to_csv(output.confident_contigs_intervals, header=False, index=False)
+
+        # Extract the confident contig names
+        df[0].unique().to_csv(output.confident_contigs, header=False, index=False)
 
 
 rule extract_nomaps:
@@ -215,7 +249,7 @@ rule extract_nomaps:
 rule contig_fasta:
     """Extract sequences of the confident contig intervals"""
     input:
-        contig_intervals="results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_confident-mapping_contig-intervals.txt",
+        contig_names="results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_confident-mapping_contigs.txt",
         original_asm=get_fasta,
     output:
         fasta="results/{ref_name}/{sample}/{fasta_origin}/fasta/{asm}_confident-mapping_{conf_prnct}.fasta",
@@ -231,34 +265,19 @@ rule contig_fasta:
         hrs=72,
     shell:
         """
-        samtools faidx \
-            --region-file {input.contig_intervals} \
-            --output {output.fasta} \
-            {input.original_asm}
+        seqtk subseq \
+            {input.original_asm} \
+            {input.contig_names} \
+            | seqtk seq -Cl60 /dev/stdin > {output.fasta}
         """
 
 
-# rule scaffold_X:
-#     """Scaffold the sequences in order"""
-#     input:
-#         "contig.fasta"
-#     output:
-#         "one.fasta"
-#     run:
-#         pass
-
-
-rule ragtag_correct:
+rule ragtag_scaffold:
     input:
-        query_fa="results/{ref_name}/{sample}/main/fasta/{asm}_confident-mapping_{conf_prnct}.fasta",
+        fasta="results/{ref_name}/{sample}/{fasta_origin}/fasta/{asm}_confident-mapping_{conf_prnct}.fasta",
         reference_fa=ref_path,
-        support_file_list=lambda wildcards: manifest_df.at[
-            wildcards.sample, "support_fofn"
-        ],
     output:
-        corrected_out=directory(
-            "results/{ref_name}/{sample}/ragtag/main/correction/{asm}_confident-mapping_{conf_prnct}/"
-        ),
+        ragtag_scaffold_fasta="results/{ref_name}/{sample}/ragtag/{fasta_origin}/scaffold/{asm}_confident-mapping_{conf_prnct}/ragtag.scaffold.fasta",
     envmodules:
         "modules",
         "modules-init",
@@ -271,34 +290,34 @@ rule ragtag_correct:
         hrs=72,
     shell:
         """
-        ragtag.py correct \
+        ragtag.py scaffold \
             -u -t {threads} \
-            -o {output.corrected_out} \
-            -T ont \
-            -F {input.support_file_list} \
-             {input.reference_fa} {input.query_fa}
+            -o $(dirname {output.ragtag_scaffold_fasta}) \
+             {input.reference_fa} {input.fasta}
         """
 
 
-rule ragtag_scaffold:
+rule ragtag_patch:
     input:
-        ragtag_corrected_fasta="results/{ref_name}/{sample}/ragtag/main/correction/{asm}_confident-mapping_{conf_prnct}/ragtag.correct.fasta",
-        reference_fa=ref_path,
+        unpack(get_ragtag_patch_input),
     output:
-        ragtag_scaffold_fasta="results/{ref_name}/{sample}/ragtag/main/scaffold/{asm}_confident-mapping_{conf_prnct}/ragtag.scaffold.fasta",
-        ragtag_scaffold=directory(
-            "results/{ref_name}/{sample}/ragtag/main/scaffold/{asm}_confident-mapping_{conf_prnct}/"
-        ),
+        ragtag_patch_fasta="results/{ref_name}/{sample}/ragtag/main/patch/{asm}_confident-mapping_{conf_prnct}/ragtag.patch.fasta",
+    envmodules:
+        "modules",
+        "modules-init",
+        "modules-gs/prod",
+        "modules-eichler/prod",
+        "ragtag/2.1.0",
     threads: 16
     resources:
         mem=8,
         hrs=72,
     shell:
         """
-        ragtag.py scaffold \
-            -u -t {threads} \
-            -o {output.ragtag_scaffold} \
-             {input.reference_fa} {input.ragtag_corrected_fasta}
+        ragtag.py patch \
+            -u -w -t {threads} \
+            -o $(dirname {output.ragtag_patch_fasta}) \
+             {input.scaffold_main} {input.scaffold_support}
         """
 
 
