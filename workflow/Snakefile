@@ -214,7 +214,9 @@ rule extract_confident_contigs:
         df[12].to_csv(output.confident_contigs_intervals, header=False, index=False)
 
         # Extract the confident contig names
-        df[0].drop_duplicates().to_csv(output.confident_contigs, header=False, index=False)
+        df[0].drop_duplicates().to_csv(
+            output.confident_contigs, header=False, index=False
+        )
 
 
 rule extract_nomaps:
@@ -236,14 +238,31 @@ rule extract_nomaps:
         """
 
 
-# rule annotate_nomaps:
-#     """Annotate the regions with no mappings to whether they fall in the centromeres or PAR"""
-#     input:
-#         no_mappings_bed = "results/{ref_name}/{sample}/{asm}_{conf_prnct}_no-mapping.bed"
-#     output:
-#         annotated_bed = "results/{ref_name}/{sample}/{asm}_{conf_prnct}_no-mapping_annotated.bed"
-#     run:
-#         pass
+rule extract_chrX_ref_fasta:
+    input:
+        reference_fa=ref_path,
+    output:
+        chrX_ref_fasta=temp("results/{ref_name}/chrX.fasta"),
+        chrX_ref_fasta_fai=temp("results/{ref_name}/chrX.fasta.fai"),
+    params:
+        target_chr=target_chr,
+    envmodules:
+        "modules",
+        "modules-init",
+        "modules-gs/prod",
+        "modules-eichler/prod",
+        "seqtk/1.4",
+    threads: 1
+    resources:
+        mem=16,
+        hrs=72,
+    shell:
+        """
+        seqtk subseq \
+            {input.reference_fa} <(echo {params.target_chr})  | seqtk seq -Cl60 /dev/stdin > {output.chrX_ref_fasta}
+        
+        grep -w {params.target_chr} {input.reference_fa} > {output.chrX_ref_fasta_fai}
+        """
 
 
 rule contig_fasta:
@@ -253,12 +272,14 @@ rule contig_fasta:
         original_asm=get_fasta,
     output:
         fasta="results/{ref_name}/{sample}/{fasta_origin}/fasta/{asm}_confident-mapping_{conf_prnct}.fasta",
+    params:
+        target_chr=target_chr,
     envmodules:
         "modules",
         "modules-init",
         "modules-gs/prod",
         "modules-eichler/prod",
-        "samtools/1.14",
+        "seqtk/1.4",
     threads: 1
     resources:
         mem=16,
@@ -269,13 +290,16 @@ rule contig_fasta:
             {input.original_asm} \
             {input.contig_names} \
             | seqtk seq -Cl60 /dev/stdin > {output.fasta}
+        seqtk subseq \
+            {input.reference_fa} <(echo {params.target_chr})  | seqtk seq -Cl60 /dev/stdin > {output.chrX_ref_fasta}
         """
 
 
 rule ragtag_scaffold:
     input:
         fasta="results/{ref_name}/{sample}/{fasta_origin}/fasta/{asm}_confident-mapping_{conf_prnct}.fasta",
-        reference_fa=ref_path,
+        reference_fa="results/{ref_name}/chrX.fasta",
+        reference_fa_fai="results/{ref_name}/chrX.fasta.fai",
     output:
         ragtag_scaffold_fasta="results/{ref_name}/{sample}/ragtag/{fasta_origin}/scaffold/{asm}_confident-mapping_{conf_prnct}/ragtag.scaffold.fasta",
     envmodules:
@@ -327,5 +351,14 @@ rule find_flanking_contigs:
     input:
         pass
     output:
+        pass
+
+Annotate the regions with no mappings to whether they fall in the centromeres or PAR
+rule annotate_nomaps:
+    input:
+        no_mappings_bed = "results/{ref_name}/{sample}/{asm}_{conf_prnct}_no-mapping.bed"
+    output:
+        annotated_bed = "results/{ref_name}/{sample}/{asm}_{conf_prnct}_no-mapping_annotated.bed"
+    run:
         pass
 """
