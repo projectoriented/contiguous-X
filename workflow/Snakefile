@@ -31,8 +31,8 @@ wildcard_constraints:
 
 
 def get_final_output(wildcards):
-    # p=f"results/{ref_name}/{{sample}}/{{asm}}_{{conf_prnct}}_no-mapping.bed"
     p = f"results/{ref_name}/{{sample}}/ragtag/main/patch/{{asm}}_confident-mapping_{{conf_prnct}}/ragtag.patch.fasta"
+    p2=f"results/{ref_name}/{{sample}}/{{asm}}_{{conf_prnct}}_no-mapping.bed"
 
     final_output = []
     for row in manifest_df.itertuples():
@@ -40,6 +40,9 @@ def get_final_output(wildcards):
         for asm in asm_names:
             final_output.append(
                 p.format(sample=row.sample, asm=asm, conf_prnct=conf_fraction)
+            )
+            final_output.append(
+                p2.format(sample=row.sample,asm=asm,conf_prnct=conf_fraction)
             )
 
     return final_output
@@ -183,10 +186,7 @@ rule extract_confident_contigs:
     output:
         confident_paf="results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_confident-mapping.paf",
         confident_bed="results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_confident-mapping.bed",
-        confident_contigs_intervals=temp(
-            "results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_confident-mapping_contig-intervals.txt"
-        ),
-        confident_contigs="results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_confident-mapping_contigs.txt",
+        confident_contigs=temp("results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_confident-mapping_contigs.txt"),
     run:
         # Please reference the columns here: https://github.com/lh3/miniasm/blob/master/PAF.md
         df = pd.read_table(input.paf, header=None, usecols=range(0, 12))
@@ -211,7 +211,8 @@ rule extract_confident_contigs:
         )
 
         # Extract the contig intervals
-        df[12].to_csv(output.confident_contigs_intervals, header=False, index=False)
+        # df[12].to_csv(output.confident_contigs_intervals, header=False, index=False)
+        # confident_contigs_intervals="results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_confident-mapping_contig-intervals.txt",
 
         # Extract the confident contig names
         df[0].drop_duplicates().to_csv(
@@ -224,9 +225,7 @@ rule extract_nomaps:
     input:
         confident_beds=get_confident_beds,
     output:
-        no_mappings_bed=temp(
-            "results/{ref_name}/{sample}/{asm}_{conf_prnct}_no-mapping.bed"
-        ),
+        no_mappings_bed="results/{ref_name}/{sample}/{asm}_{conf_prnct}_no-mapping.bed",
     params:
         chrX_gsize=chrX_gsize,
     shell:
