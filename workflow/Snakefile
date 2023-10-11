@@ -1,131 +1,110 @@
+import itertools
+
 import pandas as pd
-import os
 
+manifest_df = pd.read_table(
+    config["manifest"],keep_default_na=False,dtype="str"
+).set_index(
+    ["sample"],drop=False
+)  # sample,fasta,group
 
-manifest_df = pd.read_csv(
-    config["manifest"], sep="\t", keep_default_na=False
-).set_index(["sample"], drop=False)
-haps = manifest_df.columns
-chrX_gsize = config.get("chrX_gsize", 154259566)  # chm13v2 chrX size
-conf_fraction = config.get("confident_fraction", 0.80)
+target_chr = config.get("target_chr","chrX")
+chrom_size = config.get("chrom_size",154259566)  # chm13v2 chrX size
+conf_fraction = config.get("confident_fraction",0.80)
+svbyeye_cntr = config["svbyeye_cntr"]
 
 # Make sure there is just one entry
 assert (
-    len(config["reference"].keys()) == 1
+        len(config["reference"].keys()) == 1
 ), "Only one reference_name:reference_path pair allowed, e.g. chrX_T2T: /path/to/fasta"
 
 ref_name = list(config["reference"].keys()).pop()
 ref_path = config["reference"][ref_name]
-
-target_chr = config.get("target_chr", "chrX")
-
 
 wildcard_constraints:
     sample="|".join(manifest_df.index),
     hap="|".join(manifest_df.columns),
     chr=target_chr,
     fasta_origin="main|support",
-
-
-# TODO: throw error if support_fofn is NA or the length is less
+    group="|".join(manifest_df["group"]),
+    chrom=target_chr,
+    conf_prnct=conf_fraction,
+    view="view_\d+",
 
 
 def get_final_output(wildcards):
-    p = f"results/{ref_name}/{{sample}}/ragtag/main/patch/{{asm}}_confident-mapping_{{conf_prnct}}/ragtag.patch.fasta"
-    p2=f"results/{ref_name}/{{sample}}/{{asm}}_{{conf_prnct}}_no-mapping.bed"
-
     final_output = []
-    for row in manifest_df.itertuples():
-        asm_names = get_fa_df(sample_name=row.sample, which_one="main").index.tolist()
-        for asm in asm_names:
-            final_output.append(
-                p.format(sample=row.sample, asm=asm, conf_prnct=conf_fraction)
-            )
-            final_output.append(
-                p2.format(sample=row.sample,asm=asm,conf_prnct=conf_fraction)
-            )
+
+    unique_groups = manifest_df["group"].unique()
+
+    # All vs. all alignment
+    for g in unique_groups:
+        order = config["view_order"][g]
+        visual_order_df = make_pairs(visual_order_string=order)
+        unique_idx = visual_order_df.idx.unique()
+        final_output.extend(
+            [
+                f"results/{ref_name}/{target_chr}/confident-mapping_{conf_fraction}/all-vs-all/{g}/{view_idx}/{g}-oriented.pdf"
+                for view_idx in unique_idx
+            ]
+        )
+
+    # Individual files
+    final_output.extend(
+        expand(
+            [
+                "results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/ragtag/scaffold/ragtag.scaffold.fasta",
+                "results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/{sample}_no-mapping_annotated.bed",
+            ],
+            ref_name=ref_name,
+            conf_prnct=conf_fraction,
+            sample=manifest_df.index,
+            chrom=target_chr,
+        )
+    )
 
     return final_output
 
 
 def get_fasta(wildcards):
-    fa_df = get_fa_df(wildcards.sample, which_one=wildcards.fasta_origin)
-    return fa_df.at[wildcards.asm, "filepath"]
+    return manifest_df.at[wildcards.sample, "fasta"]
 
 
-def get_fa_df(sample_name, which_one="main"):
-    if which_one == "main":
-        fofn = "main_fofn"
-    else:
-        fofn = "support_fofn"
+def make_pairs(visual_order_string):
+    # Parse the order string
+    pair_fasta_tuple = [
+        list(itertools.pairwise(x.split(":"))) for x in visual_order_string.split(";")
+    ]
 
-    fofn_path = manifest_df.at[sample_name, fofn]
-    fofn_df = pd.read_table(fofn_path, names=["filepath"])
+    visual_order_df = pd.DataFrame()
+    for idx, x in enumerate(pair_fasta_tuple):
+        throwaway_df = pd.DataFrame(data=x,columns=["sample_one", "sample_two"])
+        throwaway_df["idx"] = f"view_{idx}"
+        visual_order_df = pd.concat([visual_order_df, throwaway_df])
 
-    # Get the cell name minus the extension
-    def get_support_asm_name(fn):
-        bn = os.path.basename(fn).split(".")[:-1]
-        return ".".join(bn)
+    # pair_fasta_tuple = list(itertools.chain.from_iterable(pair_fasta_tuple))
 
-    fofn_df["asm"] = fofn_df.filepath.map(get_support_asm_name)
-
-    # Check for duplicates
-    if fofn_df.asm.duplicated().any():
-        # Add this column to offset duplicated namings
-        fofn_df["idx"] = range(fofn_df.shape[0])
-
-        fofn_df["asm"] = fofn_df["asm"] + "-" + fofn_df.idx.astype(str)
-
-    fofn_df.set_index("asm", inplace=True)
-    return fofn_df
+    visual_order_df.reset_index(drop=True,inplace=True)
+    return visual_order_df
 
 
-def get_confident_beds(wildcards):
-    p = f"results/{ref_name}/{{sample}}/{{fasta_origin}}/{{asm}}_{{conf_prnct}}_confident-mapping.bed"
+def get_group_fasta(wildcards):
+    fasta = []
 
-    beds = []
+    order = config["view_order"][wildcards.group]
 
-    # We want the supporting contigs that map to X
-    fasta_origin = "support"
-    for row in manifest_df.itertuples():
-        asm_names = get_fa_df(
-            sample_name=row.sample, which_one=fasta_origin
-        ).index.tolist()
-        for asm in asm_names:
-            beds.append(
-                p.format(
-                    sample=row.sample,
-                    fasta_origin=fasta_origin,
-                    asm=asm,
-                    conf_prnct=wildcards.conf_prnct,
-                )
-            )
+    visual_order_df = make_pairs(visual_order_string=order)
 
-    # Add the main contigs that map to X
-    fasta_origin = "main"
-    beds.append(
-        p.format(
-            sample=wildcards.sample,
-            fasta_origin=fasta_origin,
-            asm=wildcards.asm,
-            conf_prnct=wildcards.conf_prnct,
-        )
-    )
+    fp = f"results/{wildcards.ref_name}/{wildcards.chrom}/confident-mapping_{wildcards.conf_prnct}/all-vs-all/{wildcards.group}/{wildcards.view}/{{sample_one}}_vs_{{sample_two}}.paf"
 
-    return beds
+    for row in visual_order_df.query(rf"idx == '{wildcards.view}'").itertuples():
+        fasta.append(fp.format(sample_one=row.sample_one,sample_two=row.sample_two))
+
+    return fasta
 
 
-def get_ragtag_patch_input(wildcards):
-    asm_name = (
-        get_fa_df(sample_name=wildcards.sample, which_one="support")
-        .index.tolist()
-        .pop()
-    )
-
-    return {
-        "scaffold_main": "results/{ref_name}/{sample}/ragtag/main/scaffold/{asm}_confident-mapping_{conf_prnct}/ragtag.scaffold.fasta",
-        "scaffold_support": f"results/{wildcards.ref_name}/{wildcards.sample}/ragtag/support/scaffold/{asm_name}_confident-mapping_{wildcards.conf_prnct}/ragtag.scaffold.fasta",
-    }
+def get_annotations(wildcards):
+    return [v for k, v in config["annotations"].items()]
 
 
 rule all:
@@ -138,7 +117,7 @@ rule make_paf:
         fa=get_fasta,
         ref=ref_path,
     output:
-        paf=temp("results/{ref_name}/{sample}/{fasta_origin}/{asm}.paf"),
+        paf=temp("results/{ref_name}/confident-mapping_{conf_prnct}/{sample}.paf"),
     envmodules:
         "modules",
         "modules-init",
@@ -146,7 +125,7 @@ rule make_paf:
         "modules-eichler/prod",
         "minimap2/2.24",
     params:
-        minimap=config.get("minimap_params", "-x asm20"),
+        minimap=config.get("minimap_params","-x asm20"),
     threads: 8
     resources:
         mem=12,
@@ -154,60 +133,61 @@ rule make_paf:
     shell:
         """
         minimap2 \
-            --eqx -c --cs \
             {params.minimap} \
-            -t {threads} -K {resources.mem}G \
+            -t {threads} \
             -o {output.paf} \
             {input.ref} {input.fa}
         """
 
 
-rule subset_chrX:
+rule subset_chrom:
     input:
-        paf="results/{ref_name}/{sample}/{fasta_origin}/{asm}.paf",
+        paf="results/{ref_name}/confident-mapping_{conf_prnct}/{sample}.paf",
     output:
-        paf="results/{ref_name}/{sample}/{fasta_origin}/chrX_{asm}.paf",
+        paf="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/{sample}.paf",
     threads: 1
     resources:
         mem=12,
         hrs=72,
-    params:
-        target_chr=target_chr,
     shell:
         """
-        cat {input.paf} | grep -w {params.target_chr} > {output.paf}
+        cat {input.paf} | grep -w {wildcards.chrom} > {output.paf}
         """
 
 
 rule extract_confident_contigs:
     """A confident contig maps 80% of its content to chrX."""
     input:
-        paf="results/{ref_name}/{sample}/{fasta_origin}/chrX_{asm}.paf",
+        paf="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/{sample}.paf",
     output:
-        confident_paf="results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_confident-mapping.paf",
-        confident_bed="results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_confident-mapping.bed",
-        confident_contigs=temp("results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_confident-mapping_contigs.txt"),
+        confident_paf="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/{sample}_confident-mapping.paf",
+        confident_bed="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/{sample}_confident-mapping.bed",
+        confident_contigs=temp(
+            "results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/{sample}_confident-mapping_contigs.txt"
+        ),
     run:
         # Please reference the columns here: https://github.com/lh3/miniasm/blob/master/PAF.md
-        df = pd.read_table(input.paf, header=None, usecols=range(0, 12))
+        df = pd.read_table(input.paf,header=None,usecols=range(0,12))
 
         groupdf = df.groupby([0, 1])[9].sum().reset_index()
         groupdf.loc[:, "fraction"] = groupdf[9] / groupdf[1]
         groupdf = groupdf.query(rf"fraction >= {wildcards.conf_prnct}")
 
-        groupdf.drop(columns=[9], inplace=True)
-        df = df.merge(groupdf, how="inner", on=[0, 1]).drop(columns=["fraction"])
+        groupdf.drop(columns=[9],inplace=True)
+        df = df.merge(groupdf,how="inner",on=[0, 1]).drop(columns=["fraction"])
 
-        df.to_csv(output.confident_paf, sep="\t", header=False, index=False)
+        df.to_csv(output.confident_paf,sep="\t",header=False,index=False)
 
         # contig id: contig-name:start-end
         df.loc[:, 12] = (
-            df[0].astype(str) + ":" + df[2].astype(str) + "-" + df[3].astype(str)
+                df[0].astype(str) + ":" + df[2].astype(str) + "-" + df[3].astype(str)
         )
 
+        # Since we will output bed-format, the start must be 0-based.
+        df[7] = df[7] - 1
         # Group the contig id and sort
         df.groupby([5, 7, 8])[12].apply(",".join).reset_index().to_csv(
-            output.confident_bed, sep="\t", header=False, index=False
+            output.confident_bed,sep="\t",header=False,index=False
         )
 
         # Extract the contig intervals
@@ -216,62 +196,63 @@ rule extract_confident_contigs:
 
         # Extract the confident contig names
         df[0].drop_duplicates().to_csv(
-            output.confident_contigs, header=False, index=False
+            output.confident_contigs,header=False,index=False
         )
 
 
 rule extract_nomaps:
     """Extract regions where there is no contig confidently mapping to chrX"""
     input:
-        confident_beds=get_confident_beds,
+        confident_beds="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/{sample}_confident-mapping.bed",
     output:
-        no_mappings_bed="results/{ref_name}/{sample}/{asm}_{conf_prnct}_no-mapping.bed",
+        no_mappings_bed=temp(
+            "results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/{sample}_no-mapping.bed"
+        ),
     params:
-        chrX_gsize=chrX_gsize,
+        chrom_size=chrom_size,
     shell:
         """
         cat {input.confident_beds} \
             | bedtools sort -i - \
             | bedtools merge -i - \
-            | bedtools complement -i - -g <(echo -e "chrX\\t{params.chrX_gsize}") > {output.no_mappings_bed}
+            | bedtools complement -i - -g <(echo -e "{wildcards.chrom}\\t{params.chrom_size}") > {output.no_mappings_bed}
         """
 
 
-rule extract_chrX_ref_fasta:
+rule annotate_nomaps:
+    """Annotate the regions with no mappings to whether they fall in the centromeres or PAR"""
     input:
-        reference_fa=ref_path,
-        reference_fa_fai=ref_path + ".fai",
+        annotations=get_annotations,
+        no_mappings_bed="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/{sample}_no-mapping.bed",
     output:
-        chrX_ref_fasta=temp("results/{ref_name}/chrX.fasta"),
-        chrX_ref_fasta_fai=temp("results/{ref_name}/chrX.fasta.fai"),
-    params:
-        target_chr=target_chr,
+        annotated_bed="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/{sample}_no-mapping_annotated.bed",
     envmodules:
         "modules",
         "modules-init",
         "modules-gs/prod",
         "modules-eichler/prod",
-        "seqtk/1.4",
+        "bedtools/2.29.2",
     threads: 1
     resources:
         mem=16,
         hrs=72,
     shell:
         """
-        seqtk subseq \
-            {input.reference_fa} <(echo {params.target_chr})  | seqtk seq -Cl60 /dev/stdin > {output.chrX_ref_fasta}
-        
-        grep -w {params.target_chr} {input.reference_fa_fai} > {output.chrX_ref_fasta_fai}
+        bedtools intersect \
+            -a {input.no_mappings_bed} \
+            -b {input.annotations} \
+            -filenames \
+            -wb -wa > {output.annotated_bed}
         """
 
 
 rule contig_fasta:
     """Extract sequences of the confident contig intervals"""
     input:
-        contig_names="results/{ref_name}/{sample}/{fasta_origin}/{asm}_{conf_prnct}_confident-mapping_contigs.txt",
+        contig_names="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/{sample}_confident-mapping_contigs.txt",
         original_asm=get_fasta,
     output:
-        fasta="results/{ref_name}/{sample}/{fasta_origin}/fasta/{asm}_confident-mapping_{conf_prnct}.fasta",
+        fasta="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/{sample}_confident-mapping.fasta",
     params:
         target_chr=target_chr,
     envmodules:
@@ -293,19 +274,51 @@ rule contig_fasta:
         """
 
 
+rule extract_chrom_ref_fasta:
+    input:
+        reference_fa=ref_path,
+        reference_fa_fai=ref_path + ".fai",
+    output:
+        chrom_ref_fasta="results/{ref_name}/{chrom}/{chrom}.fasta",
+        chrom_ref_fasta_fai="results/{ref_name}/{chrom}/{chrom}.fasta.fai",
+    envmodules:
+        "modules",
+        "modules-init",
+        "modules-gs/prod",
+        "modules-eichler/prod",
+        "seqtk/1.4",
+    threads: 1
+    resources:
+        mem=16,
+        hrs=72,
+    shell:
+        """
+        seqtk subseq \
+            {input.reference_fa} <(echo {wildcards.chrom})  | seqtk seq -Cl60 /dev/stdin > {output.chrom_ref_fasta}
+
+        grep -w {wildcards.chrom} {input.reference_fa_fai} > {output.chrom_ref_fasta_fai}
+        """
+
+
 rule ragtag_scaffold:
     input:
-        fasta="results/{ref_name}/{sample}/{fasta_origin}/fasta/{asm}_confident-mapping_{conf_prnct}.fasta",
-        reference_fa="results/{ref_name}/chrX.fasta",
-        reference_fa_fai="results/{ref_name}/chrX.fasta.fai",
+        query_fasta="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/{sample}_confident-mapping.fasta",
+        ref_fasta="results/{ref_name}/{chrom}/{chrom}.fasta",
+        ref_fai="results/{ref_name}/{chrom}/{chrom}.fasta.fai",
     output:
-        ragtag_scaffold_fasta="results/{ref_name}/{sample}/ragtag/{fasta_origin}/scaffold/{asm}_confident-mapping_{conf_prnct}/ragtag.scaffold.fasta",
+        ragtag_scaffold_fasta="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/ragtag/scaffold/ragtag.scaffold.fasta",
+        ragtag_scaffold_fasta_fai="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/ragtag/scaffold/ragtag.scaffold.fasta.fai",
+        ragtag_scaffold_stats="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/ragtag/scaffold/ragtag.scaffold.stats",
+        ragtag_scaffold_agp="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/ragtag/scaffold/ragtag.scaffold.agp",
+        ragtag_scaffold_subset_fasta="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/ragtag/scaffold/ragtag.scaffold_subset.fasta",
+        ragtag_scaffold_subset_fai="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/ragtag/scaffold/ragtag.scaffold_subset.fasta.fai",
     envmodules:
         "modules",
         "modules-init",
         "modules-gs/prod",
         "modules-eichler/prod",
         "ragtag/2.1.0",
+        "samtools/1.14",
     threads: 16
     resources:
         mem=8,
@@ -313,50 +326,113 @@ rule ragtag_scaffold:
     shell:
         """
         ragtag.py scaffold \
+            --mm2-params "-x asm20" \
             -u -t {threads} \
             -o $(dirname {output.ragtag_scaffold_fasta}) \
-             {input.reference_fa} {input.fasta}
+             {input.ref_fasta} {input.query_fasta} \
+         && \
+            sed -ri "s/(>.*)/\\1-{wildcards.sample}/" {output.ragtag_scaffold_fasta} && samtools faidx {output.ragtag_scaffold_fasta}
+
+        wait
+
+        grep "^{wildcards.chrom}" {output.ragtag_scaffold_fasta_fai} > {output.ragtag_scaffold_subset_fai}
+        samtools faidx {output.ragtag_scaffold_fasta} -r <( cut -f1 {output.ragtag_scaffold_subset_fai} ) > {output.ragtag_scaffold_subset_fasta}
         """
 
 
-rule ragtag_patch:
+def get_desired_pair(wildcards):
+    if wildcards.sample_one != ref_name:
+        desired_paired_ref = f"results/{ref_name}/{wildcards.chrom}/confident-mapping_{wildcards.conf_prnct}/{wildcards.sample_one}/ragtag/scaffold/ragtag.scaffold_subset.fasta"
+    else:
+        desired_paired_ref = (
+            f"results/{wildcards.ref_name}/{wildcards.chrom}/{wildcards.chrom}.fasta"
+        )
+
+    if wildcards.sample_two != ref_name:
+        desired_paired_query = f"results/{ref_name}/{wildcards.chrom}/confident-mapping_{wildcards.conf_prnct}/{wildcards.sample_two}/ragtag/scaffold/ragtag.scaffold_subset.fasta"
+    else:
+        desired_paired_query = (
+            f"results/{wildcards.ref_name}/{wildcards.chrom}/{wildcards.chrom}.fasta"
+        )
+
+    return {"ref": desired_paired_ref, "query": desired_paired_query}
+
+
+rule aln_again:
     input:
-        unpack(get_ragtag_patch_input),
+        unpack(get_desired_pair),
     output:
-        ragtag_patch_fasta="results/{ref_name}/{sample}/ragtag/main/patch/{asm}_confident-mapping_{conf_prnct}/ragtag.patch.fasta",
+        paf=temp(
+            "results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{sample_one}_vs_{sample_two}.paf"
+        ),
+    params:
+        minimap=config.get("minimap_params","-x asm20"),
     envmodules:
         "modules",
         "modules-init",
         "modules-gs/prod",
         "modules-eichler/prod",
-        "ragtag/2.1.0",
+        "minimap2/2.24",
     threads: 16
     resources:
         mem=8,
         hrs=72,
     shell:
         """
-        ragtag.py patch \
-            -u -w -t {threads} \
-            -o $(dirname {output.ragtag_patch_fasta}) \
-             {input.scaffold_main} {input.scaffold_support}
+        minimap2 \
+            {params.minimap} \
+            -c \
+            -t {threads} \
+            -o {output.paf} \
+            {input.ref} {input.query}
         """
 
 
-"""
-Extract the contigs that flank the no-mapping regions
-rule find_flanking_contigs:
+rule ava_aln:
     input:
-        pass
+        group_fasta=get_group_fasta,
     output:
-        pass
+        group_paf="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}.paf",
+    shell:
+        """
+        cat {input.group_fasta} > {output.group_paf}
+        """
 
-Annotate the regions with no mappings to whether they fall in the centromeres or PAR
-rule annotate_nomaps:
+
+rule orient_majority:
     input:
-        no_mappings_bed = "results/{ref_name}/{sample}/{asm}_{conf_prnct}_no-mapping.bed"
+        ava_paf="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}.paf",
     output:
-        annotated_bed = "results/{ref_name}/{sample}/{asm}_{conf_prnct}_no-mapping_annotated.bed"
-    run:
-        pass
-"""
+        oriented_ava_paf="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}-oriented.paf",
+    envmodules:
+        "modules",
+        "modules-init",
+        "modules-gs/prod",
+        "modules-eichler/prod",
+        "rustybam/0.1.33",
+    threads: 1
+    resources:
+        mem=4,
+        hrs=72,
+    shell:
+        """
+        rustybam orient {input.ava_paf} > {output.oriented_ava_paf}
+
+        # Need to adjust first column of output because rustybam appends the strand to the first column string.
+        sed -i -r 's/([^\\t])([+-]{{1}})\\t(.*)/\\1\\t\\3/' {output.oriented_ava_paf}
+        """
+
+
+rule svbyeye:
+    input:
+        oriented_ava_paf="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}-oriented.paf",
+    output:
+        ava_pdf="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}-oriented.pdf",
+    container:
+        svbyeye_cntr
+    threads: 1
+    resources:
+        mem=4,
+        hrs=72,
+    script:
+        "scripts/plot-ava.R"
