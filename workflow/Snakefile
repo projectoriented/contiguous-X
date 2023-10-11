@@ -363,7 +363,7 @@ def get_desired_pair(wildcards):
     # return {"ref": desired_paired_ref, "query": desired_paired_query}
 
 
-rule aln_again:
+rule ava_aln:
     input:
         group_fasta = get_desired_pair,
     output:
@@ -394,14 +394,14 @@ rule aln_again:
         """
 
 
-rule ava_aln:
+rule combine_ava:
     input:
         group_paf=get_group_paf,
     output:
         group_paf="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}.paf",
     shell:
         """
-        cat {input.group_paf} | sed "s/{wildcards.chrom}_RagTag-//g; s/chrX/{wildcards.ref_name}/g" > {output.group_paf}
+        cat {input.group_paf} | sed "s/{wildcards.chrom}_RagTag-//g; s/{wildcards.chrom}/{wildcards.ref_name}/g" > {output.group_paf}
         """
 
 
