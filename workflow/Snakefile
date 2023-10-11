@@ -88,7 +88,7 @@ def make_pairs(visual_order_string):
     return visual_order_df
 
 
-def get_group_fasta(wildcards):
+def get_group_paf(wildcards):
     fasta = []
 
     order = config["view_order"][wildcards.group]
@@ -97,11 +97,15 @@ def get_group_fasta(wildcards):
 
     fp = f"results/{wildcards.ref_name}/{wildcards.chrom}/confident-mapping_{wildcards.conf_prnct}/all-vs-all/{wildcards.group}/{wildcards.view}/{{sample_one}}_vs_{{sample_two}}.paf"
 
-    for row in visual_order_df.query(rf"idx == '{wildcards.view}'").itertuples():
+    for row in visual_order_df.query(fr"idx == '{wildcards.view}'").itertuples():
         fasta.append(fp.format(sample_one=row.sample_one,sample_two=row.sample_two))
 
     return fasta
 
+def get_svbyeye_param(wildcards) -> list:
+    order = config["view_order"][wildcards.group]
+    visual_order_df = make_pairs(visual_order_string=order)
+    return pd.melt(visual_order_df.query(fr"idx == '{wildcards.view}'"),value_vars=["sample_one", "sample_two"]).value.unique().tolist()
 
 def get_annotations(wildcards):
     return [v for k, v in config["annotations"].items()]
@@ -355,12 +359,13 @@ def get_desired_pair(wildcards):
             f"results/{wildcards.ref_name}/{wildcards.chrom}/{wildcards.chrom}.fasta"
         )
 
-    return {"ref": desired_paired_ref, "query": desired_paired_query}
+    return [desired_paired_ref, desired_paired_query]
+    # return {"ref": desired_paired_ref, "query": desired_paired_query}
 
 
 rule aln_again:
     input:
-        unpack(get_desired_pair),
+        group_fasta = get_desired_pair,
     output:
         paf=temp(
             "results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{sample_one}_vs_{sample_two}.paf"
@@ -381,21 +386,22 @@ rule aln_again:
         """
         minimap2 \
             {params.minimap} \
+            -DP --no-long-join --dual=no \
             -c \
             -t {threads} \
             -o {output.paf} \
-            {input.ref} {input.query}
+            <(cat {input.group_fasta}) <(cat {input.group_fasta})
         """
 
 
 rule ava_aln:
     input:
-        group_fasta=get_group_fasta,
+        group_paf=get_group_paf,
     output:
         group_paf="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}.paf",
     shell:
         """
-        cat {input.group_fasta} > {output.group_paf}
+        cat {input.group_paf} | sed "s/{wildcards.chrom}_RagTag-//g; s/chrX/{wildcards.ref_name}/g" > {output.group_paf}
         """
 
 
@@ -428,9 +434,12 @@ rule svbyeye:
         oriented_ava_paf="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}-oriented.paf",
     output:
         ava_pdf="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}-oriented.pdf",
+    log: "results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/log.txt"
     container:
         svbyeye_cntr
     threads: 1
+    params:
+        desired_order = get_svbyeye_param
     resources:
         mem=4,
         hrs=72,
