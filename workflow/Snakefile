@@ -99,13 +99,17 @@ def get_group_paf(wildcards):
 
     for row in visual_order_df.query(fr"idx == '{wildcards.view}'").itertuples():
         fasta.append(fp.format(sample_one=row.sample_one,sample_two=row.sample_two))
+        fasta.append(fp.format(sample_one=row.sample_two,sample_two=row.sample_one))
 
     return fasta
 
 def get_svbyeye_param(wildcards) -> list:
     order = config["view_order"][wildcards.group]
     visual_order_df = make_pairs(visual_order_string=order)
-    return pd.melt(visual_order_df.query(fr"idx == '{wildcards.view}'"),value_vars=["sample_one", "sample_two"]).value.unique().tolist()
+
+    order_list = pd.melt(visual_order_df.query(fr"idx == '{wildcards.view}'"),value_vars=["sample_one", "sample_two"]).value.unique().tolist()
+
+    return [x if x != wildcards.ref_name else x.replace(wildcards.ref_name, f"{x}-{wildcards.chrom}") for x in order_list]
 
 def get_annotations(wildcards):
     return [v for k, v in config["annotations"].items()]
@@ -385,14 +389,17 @@ rule ava_aln:
     shell:
         """
         minimap2 \
-            {params.minimap} \
-            -DP --no-long-join --dual=no \
             -c \
+            {params.minimap} \
             -t {threads} \
             -o {output.paf} \
-            <(cat {input.group_fasta}) <(cat {input.group_fasta})
+            {input.group_fasta}
         """
 
+"""
+            -k19 -w19 -m200 \
+            -DP --no-long-join --dual=no \
+"""
 
 rule combine_ava:
     input:
@@ -401,7 +408,7 @@ rule combine_ava:
         group_paf="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}.paf",
     shell:
         """
-        cat {input.group_paf} | sed "s/{wildcards.chrom}_RagTag-//g; s/{wildcards.chrom}/{wildcards.ref_name}/g" > {output.group_paf}
+        cat {input.group_paf} | sed "s/{wildcards.chrom}_RagTag-//g; s/{wildcards.chrom}/{wildcards.ref_name}-{wildcards.chrom}/g" > {output.group_paf}
         """
 
 
