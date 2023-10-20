@@ -44,7 +44,7 @@ def get_final_output(wildcards):
         unique_idx = visual_order_df.idx.unique()
         final_output.extend(
             [
-                f"results/{ref_name}/{target_chr}/confident-mapping_{conf_fraction}/all-vs-all/{g}/{view_idx}/{g}-oriented.pdf"
+                f"results/{ref_name}/{target_chr}/confident-mapping_{conf_fraction}/all-vs-all/{g}/{view_idx}/{g}-oriented.png"
                 for view_idx in unique_idx
             ]
         )
@@ -440,7 +440,7 @@ rule svbyeye:
     input:
         oriented_ava_paf="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}-oriented.paf",
     output:
-        ava_pdf="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}-oriented.pdf",
+        ava_png="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}-oriented.png",
     log: "results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/log.txt"
     container:
         svbyeye_cntr
