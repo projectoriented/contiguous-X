@@ -44,8 +44,8 @@ def get_final_output(wildcards):
         unique_idx = visual_order_df.idx.unique()
         final_output.extend(
             [
-                f"results/{ref_name}/{target_chr}/confident-mapping_{conf_fraction}/all-vs-all/{g}/{view_idx}/{g}-oriented.png"
-                for view_idx in unique_idx
+                f"results/{ref_name}/{target_chr}/confident-mapping_{conf_fraction}/all-vs-all/{g}/{view_idx}/{g}-oriented_by-{plt}.png"
+                for view_idx in unique_idx for plt in ["identity", "SV"]
             ]
         )
 
@@ -102,6 +102,36 @@ def get_group_paf(wildcards):
         fasta.append(fp.format(sample_one=row.sample_two,sample_two=row.sample_one))
 
     return fasta
+
+
+def get_group_items(which_item):
+    def inner(wildcards):
+        out = []
+
+        order = config["view_order"][wildcards.group]
+
+        visual_order_df = make_pairs(visual_order_string=order)
+
+        if which_item == "paf":
+            fp = f"results/{wildcards.ref_name}/{wildcards.chrom}/confident-mapping_{wildcards.conf_prnct}/all-vs-all/{wildcards.group}/{wildcards.view}/{{sample_one}}_vs_{{sample_two}}.paf"
+
+            for row in visual_order_df.query(fr"idx == '{wildcards.view}'").itertuples():
+                out.append(fp.format(sample_one=row.sample_one,sample_two=row.sample_two))
+                out.append(fp.format(sample_one=row.sample_two,sample_two=row.sample_one))
+        elif which_item == "gaps":
+            fp = f"results/{wildcards.ref_name}/{wildcards.chrom}/confident-mapping_{wildcards.conf_prnct}/{{target_sample}}/ragtag/scaffold/gaps.bed"
+
+            # take out the ref_name pairings
+            visual_order_df = visual_order_df.query(fr"sample_two != '{wildcards.ref_name}'")
+
+            for row in visual_order_df.query(fr"idx == '{wildcards.view}'").itertuples():
+                out.append(fp.format(target_sample=row.sample_one))
+                out.append(fp.format(target_sample=row.sample_two))
+        else:
+            raise ValueError(f"Unknown argument to which_item function {which_item}- choose only paf or gaps")
+
+        return out
+    return inner
 
 def get_svbyeye_param(wildcards) -> list:
     order = config["view_order"][wildcards.group]
@@ -347,6 +377,20 @@ rule ragtag_scaffold:
         samtools faidx {output.ragtag_scaffold_fasta} -r <( cut -f1 {output.ragtag_scaffold_subset_fai} ) > {output.ragtag_scaffold_subset_fasta}
         """
 
+rule get_scaffolded_gaps:
+    input:
+        ragtag_scaffold_agp = "results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/ragtag/scaffold/ragtag.scaffold.agp",
+    output:
+        scaffold_filled_gaps = "results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/ragtag/scaffold/gaps.bed"
+    threads: 1
+    resources:
+        mem=8,
+        hrs=72,
+    shell:
+        """
+        grep ^{wildcards.chrom} {input.ragtag_scaffold_agp} | grep -w "100" | cut -f1-3 | sed "s/{wildcards.chrom}_RagTag/{wildcards.sample}/g; s/$/\tgap/g" > {output.scaffold_filled_gaps}
+        """
+
 
 def get_desired_pair(wildcards):
     if wildcards.sample_one != ref_name:
@@ -366,6 +410,21 @@ def get_desired_pair(wildcards):
     return [desired_paired_ref, desired_paired_query]
     # return {"ref": desired_paired_ref, "query": desired_paired_query}
 
+
+rule make_annotation_bed:
+    input:
+        scaffold_filled_gaps=get_group_items(which_item="gaps"),
+        centromere = config["annotations"]["censat"]
+    output:
+        annotation_bed = "results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}.bed"
+    threads: 1
+    resources:
+        mem=8,
+        hrs=72,
+    shell:
+        """
+        cat {input.scaffold_filled_gaps} <(cat {input.centromere} | grep "^{wildcards.chrom}" | cut -f1-4 | sed "s/{wildcards.chrom}/{wildcards.ref_name}-{wildcards.chrom}/g") > {output.annotation_bed}
+        """
 
 rule ava_aln:
     input:
@@ -396,14 +455,11 @@ rule ava_aln:
             {input.group_fasta}
         """
 
-"""
-            -k19 -w19 -m200 \
-            -DP --no-long-join --dual=no \
-"""
 
 rule combine_ava:
     input:
-        group_paf=get_group_paf,
+        # group_paf=get_group_paf,
+        group_paf=get_group_items(which_item="paf"),
     output:
         group_paf="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}.paf",
     shell:
@@ -439,8 +495,10 @@ rule orient_majority:
 rule svbyeye:
     input:
         oriented_ava_paf="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}-oriented.paf",
+        annotation_bed="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}.bed",
     output:
-        ava_png="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}-oriented.png",
+        ava_identity_png="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}-oriented_by-identity.png",
+        ava_sv_png="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}-oriented_by-SV.png",
     log: "results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/log.txt"
     container:
         svbyeye_cntr
