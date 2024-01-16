@@ -1,4 +1,4 @@
-latency-wait: 60
+latency-wait: 5
 keep-going: True
 printshellcmds: True
 restart-times: 3

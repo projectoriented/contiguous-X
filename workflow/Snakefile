@@ -20,6 +20,7 @@ assert (
 
 ref_name = list(config["reference"].keys()).pop()
 ref_path = config["reference"][ref_name]
+exclude_centromere = config.get("exclude_centromere", 0)
 
 wildcard_constraints:
     sample="|".join(manifest_df.index),
@@ -39,15 +40,18 @@ def get_final_output(wildcards):
 
     # All vs. all alignment
     for g in unique_groups:
-        order = config["view_order"][g]
-        visual_order_df = make_pairs(visual_order_string=order)
-        unique_idx = visual_order_df.idx.unique()
-        final_output.extend(
-            [
-                f"results/{ref_name}/{target_chr}/confident-mapping_{conf_fraction}/all-vs-all/{g}/{view_idx}/{g}-oriented_by-{plt}.png"
-                for view_idx in unique_idx for plt in ["identity", "SV"]
-            ]
-        )
+        try:
+            order = config["view_order"][g]
+            visual_order_df = make_pairs(visual_order_string=order)
+            unique_idx = visual_order_df.idx.unique()
+            final_output.extend(
+                [
+                    f"results/{ref_name}/{target_chr}/confident-mapping_{conf_fraction}/all-vs-all/{g}/{view_idx}/{g}-oriented_by-{plt}.png"
+                    for view_idx in unique_idx for plt in ["identity", "SV", "identity_ONLY"]
+                ]
+            )
+        except KeyError:
+            pass
 
     # Individual files
     final_output.extend(
@@ -55,6 +59,7 @@ def get_final_output(wildcards):
             [
                 "results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/ragtag/scaffold/ragtag.scaffold.fasta",
                 "results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/{sample}_no-mapping_annotated.bed",
+                "results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/ragtag/scaffold/gaps.bed",
             ],
             ref_name=ref_name,
             conf_prnct=conf_fraction,
@@ -65,6 +70,14 @@ def get_final_output(wildcards):
 
     return final_output
 
+def calc_mem_gb(wildcards, input, attempt, threads):
+    mb = max(1.5 * input.size_mb, 1000)
+    gb = int(mb / 1000)
+
+    if threads != 1:
+        gb = int(max(gb / threads, 2))
+
+    return gb * attempt
 
 def get_fasta(wildcards):
     return manifest_df.at[wildcards.sample, "fasta"]
@@ -166,7 +179,7 @@ rule make_paf:
         minimap=config.get("minimap_params","-x asm20"),
     threads: 8
     resources:
-        mem=12,
+        mem=calc_mem_gb,
         hrs=72,
     shell:
         """
@@ -185,7 +198,7 @@ rule subset_chrom:
         paf="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/{sample}.paf",
     threads: 1
     resources:
-        mem=12,
+        mem=calc_mem_gb,
         hrs=72,
     shell:
         """
@@ -272,7 +285,7 @@ rule annotate_nomaps:
         "bedtools/2.29.2",
     threads: 1
     resources:
-        mem=16,
+        mem=calc_mem_gb,
         hrs=72,
     shell:
         """
@@ -301,7 +314,7 @@ rule contig_fasta:
         "seqtk/1.4",
     threads: 1
     resources:
-        mem=16,
+        mem=calc_mem_gb,
         hrs=72,
     shell:
         """
@@ -324,17 +337,15 @@ rule extract_chrom_ref_fasta:
         "modules-init",
         "modules-gs/prod",
         "modules-eichler/prod",
-        "seqtk/1.4",
+        "samtools/1.14"
     threads: 1
     resources:
-        mem=16,
+        mem=calc_mem_gb,
         hrs=72,
     shell:
         """
-        seqtk subseq \
-            {input.reference_fa} <(echo {wildcards.chrom})  | seqtk seq -Cl60 /dev/stdin > {output.chrom_ref_fasta}
-
-        grep -w {wildcards.chrom} {input.reference_fa_fai} > {output.chrom_ref_fasta_fai}
+        samtools faidx {input.reference_fa} {wildcards.chrom} > {output.chrom_ref_fasta}
+        samtools faidx {output.chrom_ref_fasta}
         """
 
 
@@ -359,7 +370,7 @@ rule ragtag_scaffold:
         "samtools/1.14",
     threads: 16
     resources:
-        mem=8,
+        mem=calc_mem_gb,
         hrs=72,
     shell:
         """
@@ -370,8 +381,6 @@ rule ragtag_scaffold:
              {input.ref_fasta} {input.query_fasta} \
          && \
             sed -ri "s/(>.*)/\\1-{wildcards.sample}/" {output.ragtag_scaffold_fasta} && samtools faidx {output.ragtag_scaffold_fasta}
-
-        wait
 
         grep "^{wildcards.chrom}" {output.ragtag_scaffold_fasta_fai} > {output.ragtag_scaffold_subset_fai}
         samtools faidx {output.ragtag_scaffold_fasta} -r <( cut -f1 {output.ragtag_scaffold_subset_fai} ) > {output.ragtag_scaffold_subset_fasta}
@@ -384,7 +393,7 @@ rule get_scaffolded_gaps:
         scaffold_filled_gaps = "results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/{sample}/ragtag/scaffold/gaps.bed"
     threads: 1
     resources:
-        mem=8,
+        mem=calc_mem_gb,
         hrs=72,
     shell:
         """
@@ -407,6 +416,10 @@ def get_desired_pair(wildcards):
             f"results/{wildcards.ref_name}/{wildcards.chrom}/{wildcards.chrom}.fasta"
         )
 
+    if exclude_centromere:
+        desired_paired_ref = desired_paired_ref.replace(".fasta", "-no_centromere.fasta")
+        desired_paired_query = desired_paired_query.replace(".fasta", "-no_centromere.fasta")
+
     return [desired_paired_ref, desired_paired_query]
     # return {"ref": desired_paired_ref, "query": desired_paired_query}
 
@@ -419,12 +432,49 @@ rule make_annotation_bed:
         annotation_bed = "results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}.bed"
     threads: 1
     resources:
-        mem=8,
+        mem=calc_mem_gb,
         hrs=72,
     shell:
         """
         cat {input.scaffold_filled_gaps} <(cat {input.centromere} | grep "^{wildcards.chrom}" | cut -f1-4 | sed "s/{wildcards.chrom}/{wildcards.ref_name}-{wildcards.chrom}/g") > {output.annotation_bed}
         """
+
+rule no_centromere_fasta:
+    input:
+        fasta="{prefix}.fasta",
+        fasta_fai="{prefix}.fasta.fai",
+    output:
+        filtered_fasta = "{prefix}-no_centromere.fasta",
+        filtered_fasta_one = temp("{prefix}-no_centromere.fasta_one"),
+        filtered_fasta_two = temp("{prefix}-no_centromere.fasta_two"),
+    envmodules:
+        "modules",
+        "modules-init",
+        "modules-gs/prod",
+        "modules-eichler/prod",
+        "samtools/1.14",
+    threads: 1
+    resources:
+        mem=calc_mem_gb,
+        hrs=72,
+    shell:
+        """
+        num_headers=$(wc -l {input.fasta_fai} | cut -f1 -d' ')
+        if [ ! $num_headers -eq 1 ]
+        then
+            echo "more than one contig, not sure what to do yet: {input.fasta_fai}" 1>&2
+            exit 1
+        fi
+        contig_name=$(cut -f1 {input.fasta_fai})
+
+        # bedtools maskfasta -fi {input.fasta} -bed <(echo -e "${{contig_name}}\t52820106\t65927025") -fo {output.filtered_fasta}
+        
+        samtools faidx {input.fasta} ${{contig_name}}:1-52820106 | tail -n +2 > {output.filtered_fasta_one}
+        samtools faidx {input.fasta} ${{contig_name}}:65927025-154259566 | tail -n +2 > {output.filtered_fasta_two}
+        
+        cat {output.filtered_fasta_one} {output.filtered_fasta_two} | fold -w 60 | sed "1i >${{contig_name}}" > {output.filtered_fasta}
+        """
+
 
 rule ava_aln:
     input:
@@ -443,7 +493,7 @@ rule ava_aln:
         "minimap2/2.24",
     threads: 16
     resources:
-        mem=8,
+        mem=calc_mem_gb,
         hrs=72,
     shell:
         """
@@ -481,7 +531,7 @@ rule orient_majority:
         "rustybam/0.1.33",
     threads: 1
     resources:
-        mem=4,
+        mem=calc_mem_gb,
         hrs=72,
     shell:
         """
@@ -499,6 +549,7 @@ rule svbyeye:
     output:
         ava_identity_png="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}-oriented_by-identity.png",
         ava_sv_png="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}-oriented_by-SV.png",
+        ava_identity_only_png="results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/{group}-oriented_by-identity_ONLY.png",
     log: "results/{ref_name}/{chrom}/confident-mapping_{conf_prnct}/all-vs-all/{group}/{view}/log.txt"
     container:
         svbyeye_cntr
@@ -506,7 +557,7 @@ rule svbyeye:
     params:
         desired_order = get_svbyeye_param
     resources:
-        mem=4,
+        mem=calc_mem_gb,
         hrs=72,
     script:
         "scripts/plot-ava.R"

@@ -10,6 +10,7 @@ sink(log, type = "message")
 paf.file.name <- snakemake@input[["oriented_ava_paf"]]
 identity.out.png.name <- snakemake@output[["ava_identity_png"]]
 sv.out.png.name <- snakemake@output[["ava_sv_png"]]
+identity_only.out.png.name <- snakemake@output[["ava_identity_only_png"]]
 seqnames.order <- snakemake@params[["desired_order"]]
 annot.bed.path <- snakemake@input[["annotation_bed"]]
 
@@ -42,6 +43,27 @@ plt <- plt + ggtitle('AVA Alignment (100kbp bin identity)')
 
 # Write out the figure
 png(filename = identity.out.png.name, width = 20, height = 10, res = 300, units = 'in')
+plt
+dev.off()
+
+
+# Begin all versus all plotting, colored by only identity
+plt <- plotAVA(
+    paf.table = paf.table, color.by = 'direction',
+    min.deletion.size = 10000, min.insertion.size = 10000,
+    highlight.sv = 'NULL', binsize = 100000,
+    seqnames.order = seqnames.order,
+    )
+
+# Add Annotation
+plt <- addAnnotation(ggplot.obj = plt, annot.gr = target.annot.gr, coordinate.space = 'self', shape = "rectangle", annotation.level = 0, y.label.id='seqnames')
+
+# Add title
+plt <- plt + ggtitle('AVA Alignment (100kbp bin identity)')
+
+
+# Write out the figure
+png(filename = identity_only.out.png.name, width = 20, height = 10, res = 300, units = 'in')
 plt
 dev.off()
 
