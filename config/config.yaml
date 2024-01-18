@@ -2,3 +2,13 @@ reference:
   chrX_T2T: "chrX_T2T.fa"
 
 manifest: manifest.tab
+
+svbyeye_cntr: "/path/to/R/SVbyEye/926575d/SVbyEye_0.99.0.sif"
+minimap_params: "-x asm20"
+annotations:
+ censat: chm13v2.0_censat_v2.0.bed
+ par: chm13v2.0_PAR.bed
+
+target_chr: chrX
+chrom_size: 154259566
+conf_fraction: 0.8
