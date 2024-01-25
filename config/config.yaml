@@ -13,3 +13,6 @@ target_ref: T2Tv2-noY
 target_chr: chrX
 chrom_size: 154259566
 conf_fraction: 0.8
+
+view_order:
+ '11080': 11080_fa_hap2:11080_p1_hap1:T2Tv2-noY;11080_mo_hap1:11080_mo_hap2:11080_p1_hap2:T2Tv2-noY
