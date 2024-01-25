@@ -22,8 +22,6 @@ print(seqnames.order)
 
 # Load the files
 paf.table <- readPaf(paf.file = paf.file.name, include.paf.tags = TRUE, restrict.paf.tags = "cg")
-target.annot.df <- read.table(annot.bed.path, header = FALSE, sep = "\t", stringsAsFactors = FALSE, col.names=c("seqnames", "start", "end", "label"))
-target.annot.gr <- GenomicRanges::makeGRangesFromDataFrame(target.annot.df, keep.extra.columns=TRUE)
 
 # Begin all versus all plotting, colored by identity
 plt <- plotAVA(
@@ -35,7 +33,14 @@ plt <- plotAVA(
     )
 
 # Add Annotation
-plt <- addAnnotation(ggplot.obj = plt, annot.gr = target.annot.gr, coordinate.space = 'self', shape = "rectangle", annotation.level = 0, y.label.id='seqnames')
+
+if (file.size(annot.bed.path) != 0) {
+    target.annot.df <- read.table(annot.bed.path, header = FALSE, sep = "\t", stringsAsFactors = FALSE, col.names=c("seqnames", "start", "end", "label"))
+    target.annot.gr <- GenomicRanges::makeGRangesFromDataFrame(target.annot.df, keep.extra.columns=TRUE)
+    plt <- addAnnotation(ggplot.obj = plt, annot.gr = target.annot.gr, coordinate.space = 'self', shape = "rectangle", annotation.level = 0, y.label.id='seqnames')
+} else {
+    print("empty annotation bed file, ignoring")
+}
 
 # Add title
 plt <- plt + ggtitle('AVA Alignment (100kbp bin identity)')
@@ -56,7 +61,11 @@ plt <- plotAVA(
     )
 
 # Add Annotation
-plt <- addAnnotation(ggplot.obj = plt, annot.gr = target.annot.gr, coordinate.space = 'self', shape = "rectangle", annotation.level = 0, y.label.id='seqnames')
+if (file.size(annot.bed.path) != 0) {
+    plt <- addAnnotation(ggplot.obj = plt, annot.gr = target.annot.gr, coordinate.space = 'self', shape = "rectangle", annotation.level = 0, y.label.id='seqnames')
+} else {
+    print("empty annotation bed file, ignoring")
+}
 
 # Add title
 plt <- plt + ggtitle('AVA Alignment (100kbp bin identity)')
@@ -77,7 +86,11 @@ plt <- plotAVA(
     )
 
 # Add Annotation
-plt <- addAnnotation(ggplot.obj = plt, annot.gr = target.annot.gr, coordinate.space = 'self', shape = "rectangle", annotation.level = 0, y.label.id='seqnames')
+if (file.size(annot.bed.path) != 0) {
+    plt <- addAnnotation(ggplot.obj = plt, annot.gr = target.annot.gr, coordinate.space = 'self', shape = "rectangle", annotation.level = 0, y.label.id='seqnames')
+} else {
+    print("empty annotation bed file, ignoring")
+}
 
 # Add title
 plt <- plt + ggtitle('AVA Alignment')

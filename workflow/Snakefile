@@ -2,23 +2,22 @@ import itertools
 
 import pandas as pd
 
+configfile: 'config/config.yaml'
+
 manifest_df = pd.read_table(
     config["manifest"],keep_default_na=False,dtype="str"
 ).set_index(
     ["sample"],drop=False
 )  # sample,fasta,group
 
+target_ref = config["target_ref"]
 target_chr = config.get("target_chr","chrX")
 chrom_size = config.get("chrom_size",154259566)  # chm13v2 chrX size
 conf_fraction = config.get("confident_fraction",0.80)
 svbyeye_cntr = config["svbyeye_cntr"]
 
-# Make sure there is just one entry
-assert (
-        len(config["reference"].keys()) == 1
-), "Only one reference_name:reference_path pair allowed, e.g. chrX_T2T: /path/to/fasta"
 
-ref_name = list(config["reference"].keys()).pop()
+ref_name = target_ref
 ref_path = config["reference"][ref_name]
 exclude_centromere = config.get("exclude_centromere", 0)
 
@@ -261,6 +260,10 @@ rule extract_nomaps:
         ),
     params:
         chrom_size=chrom_size,
+    threads: 1
+    resources:
+        mem=calc_mem_gb,
+        hrs=72,
     shell:
         """
         cat {input.confident_beds} \
