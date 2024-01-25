@@ -1,5 +1,5 @@
 reference:
-  chrX_T2T: "chrX_T2T.fa"
+  T2Tv2-noY: "chm13v2.0_maskedY.fa"
 
 manifest: manifest.tab
 
@@ -9,7 +9,7 @@ annotations:
  censat: chm13v2.0_censat_v2.0.bed
  par: chm13v2.0_PAR.bed
 
-target_ref: chrX_T2T
+target_ref: T2Tv2-noY
 target_chr: chrX
 chrom_size: 154259566
 conf_fraction: 0.8
